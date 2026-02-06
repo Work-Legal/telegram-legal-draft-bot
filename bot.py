@@ -1,55 +1,61 @@
-import pdfplumber
+import os
 import re
+import pdfplumber
+from flask import Flask, request
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     MessageHandler,
     ContextTypes,
     filters,
 )
 
-BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-# Load your case numbers
+app = Flask(__name__)
+
+telegram_app = Application.builder().token(BOT_TOKEN).build()
+
+# Load case numbers
 def load_cases():
     with open("cases.txt", "r") as f:
         return [line.strip() for line in f if line.strip()]
 
 # Extract text from PDF
-def extract_text_from_pdf(file_path):
-    full_text = ""
-    with pdfplumber.open(file_path) as pdf:
+def extract_text(pdf_path):
+    text = ""
+    with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                full_text += text + "\n"
-    return full_text
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    return text
 
-# Try to find court hall near case number
+# Find court hall
 def find_court_hall(text, case_no):
     pattern = case_no + r".{0,200}"
     match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
     if match:
         snippet = match.group()
-        hall_match = re.search(r"(Court\s*Hall\s*No\.?\s*\d+|CH-\d+)", snippet, re.IGNORECASE)
-        if hall_match:
-            return hall_match.group()
+        hall = re.search(
+            r"(Court\s*Hall\s*No\.?\s*\d+|CH-\d+|Bench\s*\d+)",
+            snippet,
+            re.IGNORECASE
+        )
+        if hall:
+            return hall.group()
     return "Court hall not clearly mentioned"
 
-# Handle incoming PDF
-async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    document = update.message.document
-    if not document.file_name.lower().endswith(".pdf"):
-        await update.message.reply_text("Please send a PDF causelist.")
-        return
+# Handle PDF
+async def pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    doc = update.message.document
+    file = await doc.get_file()
+    pdf_path = "causelist.pdf"
+    await file.download_to_drive(pdf_path)
 
-    file = await document.get_file()
-    file_path = "causelist.pdf"
-    await file.download_to_drive(file_path)
+    await update.message.reply_text("📄 Causelist received. Checking...")
 
-    await update.message.reply_text("📄 Causelist received. Checking your cases...")
-
-    text = extract_text_from_pdf(file_path)
+    text = extract_text(pdf_path)
     cases = load_cases()
 
     found = False
@@ -59,17 +65,27 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if case.lower() in text.lower():
             found = True
             hall = find_court_hall(text, case)
-            reply += f"✅ Case: {case}\n🏛 {hall}\n\n"
+            reply += f"✅ {case}\n🏛 {hall}\n\n"
 
     if not found:
-        reply = "❌ None of your cases are listed in this causelist."
+        reply = "❌ None of your cases are listed today."
 
     await update.message.reply_text(reply)
 
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
-    app.run_polling()
+telegram_app.add_handler(MessageHandler(filters.Document.PDF, pdf_handler))
+
+@app.route("/", methods=["POST"])
+async def webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, telegram_app.bot)
+    await telegram_app.process_update(update)
+    return "OK"
+
+@app.route("/", methods=["GET"])
+def health():
+    return "Bot is running"
 
 if __name__ == "__main__":
-    main()
+    telegram_app.initialize()
+    telegram_app.start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
