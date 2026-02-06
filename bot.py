@@ -1,7 +1,6 @@
 import os
 import re
 import pdfplumber
-from flask import Flask, request
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -11,10 +10,7 @@ from telegram.ext import (
 )
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
-app = Flask(__name__)
-
-telegram_app = Application.builder().token(BOT_TOKEN).build()
+PORT = int(os.environ.get("PORT", 8080))
 
 # Load case numbers
 def load_cases():
@@ -31,7 +27,7 @@ def extract_text(pdf_path):
                 text += page_text + "\n"
     return text
 
-# Find court hall
+# Find court hall near case number
 def find_court_hall(text, case_no):
     pattern = case_no + r".{0,200}"
     match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
@@ -47,19 +43,19 @@ def find_court_hall(text, case_no):
     return "Court hall not clearly mentioned"
 
 # Handle PDF
-async def pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     file = await doc.get_file()
     pdf_path = "causelist.pdf"
     await file.download_to_drive(pdf_path)
 
-    await update.message.reply_text("📄 Causelist received. Checking...")
+    await update.message.reply_text("📄 Causelist received. Checking your cases...")
 
     text = extract_text(pdf_path)
     cases = load_cases()
 
     found = False
-    reply = "🔍 **Cases Found:**\n\n"
+    reply = "🔍 Cases Found:\n\n"
 
     for case in cases:
         if case.lower() in text.lower():
@@ -72,20 +68,16 @@ async def pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(reply)
 
-telegram_app.add_handler(MessageHandler(filters.Document.PDF, pdf_handler))
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
 
-@app.route("/", methods=["POST"])
-async def webhook():
-    data = request.get_json(force=True)
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
-    return "OK"
-
-@app.route("/", methods=["GET"])
-def health():
-    return "Bot is running"
+    # Webhook mode (Railway-safe)
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=os.environ.get("WEBHOOK_URL"),
+    )
 
 if __name__ == "__main__":
-    telegram_app.initialize()
-    telegram_app.start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    main()
