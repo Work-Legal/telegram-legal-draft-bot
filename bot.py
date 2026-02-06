@@ -9,14 +9,11 @@ from telegram.ext import (
 )
 from openai import OpenAI
 
-# Environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# OpenAI client
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Fixed master prompt (LOCKED BEHAVIOUR)
 MASTER_PROMPT = """
 You are a conservative Indian civil court advocate.
 
@@ -24,87 +21,54 @@ You must draft ONLY:
 1) Interlocutory Application
 2) Supporting Affidavit
 
-STRICT RULES:
-- Follow the given format exactly
-- Do not change headings or sequence
-- Do not invent facts
+RULES:
+- Follow the given format strictly
 - Do not add case law
-- Reasoning must be brief, routine, and procedural
+- Do not invent facts
+- Reasoning must be brief and procedural
 - Language must be formal and restrained
 - Draft only the BODY portion
-
-Use only the facts provided by the user.
 """
 
-# /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✅ Legal Draft Bot is running.\n\n"
-        "Use /ia to draft IA + Affidavit."
+        "✅ Legal Draft Bot is running.\nUse /ia to draft IA + Affidavit."
     )
 
-# /ia command (instruction step)
 async def ia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    context.user_data["awaiting_ia_details"] = True
-
+    context.user_data["awaiting"] = True
     await update.message.reply_text(
-        "📄 IA Drafting Mode\n\n"
-        "Send details EXACTLY in this format:\n\n"
-        "Case Number:\n"
-        "Court Name:\n"
-        "Applicant:\n"
-        "Opponent:\n"
-        "Purpose of IA:\n"
-        "Reason (1–2 lines):"
+        "Send IA details in plain text:\n\n"
+        "Case Number:\nCourt Name:\nApplicant:\nOpponent:\n"
+        "Purpose of IA:\nReason (1–2 lines):"
     )
 
-# Handle IA input + OpenAI drafting
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("awaiting_ia_details"):
-        user_input = update.message.text
+    if not context.user_data.get("awaiting"):
+        await update.message.reply_text("Use /ia to start.")
+        return
 
-        prompt = f"""
-{MASTER_PROMPT}
+    user_input = update.message.text
 
-FACTS PROVIDED BY USER:
-{user_input}
+    try:
+        response = client.responses.create(
+            model="gpt-3.5-turbo",
+            input=f"{MASTER_PROMPT}\n\nFACTS:\n{user_input}"
+        )
 
-Draft the IA body first, then the affidavit body.
-"""
+        draft_text = response.output_text
 
-        try:
-            response = client.responses.create(
-    model="gpt-4.1-mini",
-    input=[
-        {
-            "role": "system",
-            "content": MASTER_PROMPT
-        },
-        {
-            "role": "user",
-            "content": user_input
-        }
-    ]
-)
-
-draft_text = response.output_text
-
-            await update.message.reply_text(
-                "🧾 Draft IA + Affidavit (Body Portion):\n\n"
-                f"{draft_text}"
-            )
-
-            context.user_data.clear()
-
-        except Exception as e:
-            await update.message.reply_text(
-                "❌ Error while drafting. Please try again."
-            )
-            print(e)
-    else:
         await update.message.reply_text(
-            "Use /ia to start drafting."
+            "🧾 Draft (IA + Affidavit Body):\n\n" + draft_text
+        )
+
+        context.user_data.clear()
+
+    except Exception as e:
+        # 🔥 SHOW REAL ERROR IN TELEGRAM
+        await update.message.reply_text(
+            f"❌ OPENAI ERROR:\n{str(e)}"
         )
 
 def main():
@@ -114,7 +78,6 @@ def main():
     app.add_handler(CommandHandler("ia", ia_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("Bot started...")
     app.run_polling()
 
 if __name__ == "__main__":
