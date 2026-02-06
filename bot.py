@@ -1,83 +1,74 @@
-import os
+import pdfplumber
+import re
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
-    CommandHandler,
     MessageHandler,
     ContextTypes,
-    filters
+    filters,
 )
-from openai import OpenAI
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE"
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Load your case numbers
+def load_cases():
+    with open("cases.txt", "r") as f:
+        return [line.strip() for line in f if line.strip()]
 
-MASTER_PROMPT = """
-You are a conservative Indian civil court advocate.
+# Extract text from PDF
+def extract_text_from_pdf(file_path):
+    full_text = ""
+    with pdfplumber.open(file_path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                full_text += text + "\n"
+    return full_text
 
-You must draft ONLY:
-1) Interlocutory Application
-2) Supporting Affidavit
+# Try to find court hall near case number
+def find_court_hall(text, case_no):
+    pattern = case_no + r".{0,200}"
+    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    if match:
+        snippet = match.group()
+        hall_match = re.search(r"(Court\s*Hall\s*No\.?\s*\d+|CH-\d+)", snippet, re.IGNORECASE)
+        if hall_match:
+            return hall_match.group()
+    return "Court hall not clearly mentioned"
 
-RULES:
-- Follow the given format strictly
-- Do not add case law
-- Do not invent facts
-- Reasoning must be brief and procedural
-- Language must be formal and restrained
-- Draft only the BODY portion
-"""
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "✅ Legal Draft Bot is running.\nUse /ia to draft IA + Affidavit."
-    )
-
-async def ia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    context.user_data["awaiting"] = True
-    await update.message.reply_text(
-        "Send IA details in plain text:\n\n"
-        "Case Number:\nCourt Name:\nApplicant:\nOpponent:\n"
-        "Purpose of IA:\nReason (1–2 lines):"
-    )
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("awaiting"):
-        await update.message.reply_text("Use /ia to start.")
+# Handle incoming PDF
+async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    document = update.message.document
+    if not document.file_name.lower().endswith(".pdf"):
+        await update.message.reply_text("Please send a PDF causelist.")
         return
 
-    user_input = update.message.text
+    file = await document.get_file()
+    file_path = "causelist.pdf"
+    await file.download_to_drive(file_path)
 
-    try:
-        response = client.responses.create(
-            model="gpt-3.5-turbo",
-            input=f"{MASTER_PROMPT}\n\nFACTS:\n{user_input}"
-        )
+    await update.message.reply_text("📄 Causelist received. Checking your cases...")
 
-        draft_text = response.output_text
+    text = extract_text_from_pdf(file_path)
+    cases = load_cases()
 
-        await update.message.reply_text(
-            "🧾 Draft (IA + Affidavit Body):\n\n" + draft_text
-        )
+    found = False
+    reply = "🔍 **Cases Found:**\n\n"
 
-        context.user_data.clear()
+    for case in cases:
+        if case.lower() in text.lower():
+            found = True
+            hall = find_court_hall(text, case)
+            reply += f"✅ Case: {case}\n🏛 {hall}\n\n"
 
-    except Exception as e:
-        # 🔥 SHOW REAL ERROR IN TELEGRAM
-        await update.message.reply_text(
-            f"❌ OPENAI ERROR:\n{str(e)}"
-        )
+    if not found:
+        reply = "❌ None of your cases are listed in this causelist."
+
+    await update.message.reply_text(reply)
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ia", ia_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
+    app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
     app.run_polling()
 
 if __name__ == "__main__":
