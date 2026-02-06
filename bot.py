@@ -74,16 +74,21 @@ Draft the IA body first, then the affidavit body.
 """
 
         try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": MASTER_PROMPT},
-                    {"role": "user", "content": user_input}
-                ],
-                temperature=0.2
-            )
+            response = client.responses.create(
+    model="gpt-4.1-mini",
+    input=[
+        {
+            "role": "system",
+            "content": MASTER_PROMPT
+        },
+        {
+            "role": "user",
+            "content": user_input
+        }
+    ]
+)
 
-            draft_text = response.choices[0].message.content
+draft_text = response.output_text
 
             await update.message.reply_text(
                 "🧾 Draft IA + Affidavit (Body Portion):\n\n"
